@@ -14,13 +14,19 @@ create-gitlab-issue() {
     [[ -z "$GITLAB_TOKEN" ]] && { echo "✗ GITLAB_TOKEN 未設定"; return 1; }
 
     local dir="$root/__download"
-    local file="$dir/issue_${file_id}.md"
+    # #259 更新: issue-###-タイトル.md
+    local file_pattern="$dir/issue-${file_id}-.+\.md"
+    local file_count=$(find "$dir" -type f -regex "$file_pattern" | wc -l)
 
     # フロー: Markdown ファイル存在確認
-    if [[ ! -f "$file" ]]; then
-        echo "✗ $file がありません"; return 1;
+    if [[ "$file_count" -eq 0 ]]; then
+        echo "✗ issue-${file_id}-から始まるファイルがありません"; return 1;
+    elif [[ "$file_count" -ne 1 ]]; then
+        echo "✗ issue-${file_id}-から始まるファイルを一つにしてください"; return 1;
     fi
 
+    local file=$(find "$dir" -type f -regex "$file_pattern" | head -n 1)
+    
     local title
     # フロー: 1 行目からタイトル抽出 (`# タイトル #issue番号`)
     # 1行目の`# `から最後の`#`の手前まで出す。
@@ -56,6 +62,17 @@ create-gitlab-issue() {
     >/dev/null 2>&1 \
     || { echo "✗ API 失敗"; return 1; }
     echo "✓ issue #${iid} の1行目のissue番号を更新しました。"
+
+    # フロー: Cursor で開いているタブを閉じる
+    cursor_window=$(xdotool search --name "Cursor" | head -1)
+    if [ -n "$cursor_window" ]; then
+        xdotool windowactivate "$cursor_window" >/dev/null 2>&1
+        sleep 0.2
+        xdotool key ctrl+1 >/dev/null 2>&1
+        sleep 0.2
+        xdotool key ctrl+w >/dev/null 2>&1
+        sleep 0.3
+    fi    
 
     # フロー: ブラウザで Issue を開く
     nohup xdg-open "$GITLAB_HOST/$GITLAB_PROJ_RAW/-/issues/$iid" >/dev/null 2>&1 &

@@ -10,7 +10,7 @@ update-gitlab-issue() {
         [[ -z "$file_index" ]] && { echo "Usage: update-issue-title-description-comment <issue_number> <file_index> <note_id>" >&2; return 1; }
         [[ -z "$note_id" ]] && { echo "Usage: update-issue-title-description-comment <issue_number> <file_index> <note_id>" >&2; return 1; }
 
-        local file="$dir/__split/issue_${iid}/new/${file_index}"
+        local file="$dir/__split/issue-${iid}/new/${file_index}"
         [[ -f "$file" ]] || { echo "✗ $file がありません" >&2; return 1; }
 
         local body
@@ -56,7 +56,7 @@ update-gitlab-issue() {
         [[ -z "$iid" ]] && { echo "Usage: post-issue-comment <issue_number> <file_index>" >&2; return 1; }
         [[ -z "$file_index" ]] && { echo "Usage: post-issue-comment <issue_number> <file_index>" >&2; return 1; }
 
-        local file="$dir/__split/issue_${iid}/new/${file_index}"
+        local file="$dir/__split/issue-${iid}/new/${file_index}"
         [[ -f "$file" ]] || { echo "✗ $file がありません" >&2; return 1; }
 
         local body
@@ -132,7 +132,7 @@ update-gitlab-issue() {
 
     # フロー: 引数検証
     local iid="$1"
-    [[ -z "$iid" ]] && { echo "Usage: post-gitlab-issue-comment <issue_number>" >&2; return 1; }
+    [[ -z "$iid" ]] && { echo "Usage: update-gitlab-issue <issue_number>" >&2; return 1; }
 
     # #132 追加
     # iidが数字でない場合は、新規issue作成コマンドと間違えた可能性がある
@@ -149,15 +149,20 @@ update-gitlab-issue() {
 
     # フロー: 各種パス設定
     local dir="$root/__download"
-    local file="$dir/issue_${iid}.md"
-    local backup_file="$dir/__bk/issue_${iid}.md.bk"
+    # #259 更新: issue-###-タイトル.md
+    local file_pattern="$dir/issue-${iid}-.+\.md"
+    local file_count=$(find "$dir" -type f -regex "$file_pattern" | wc -l)
+
+    local file=$(find "$dir" -type f -regex "$file_pattern" | head -n 1)
+    local backup_file="$dir/__bk/issue-${iid}.md.bk"
     local split_dir="$dir/__split/"
 
     # 作成・更新したコメントの note_id を格納する配列
     local note_id_list=()
 
     # フロー: バックアップファイル存在確認 & なければ自動取得
-    [[ -f "$file" ]] || { echo "✗ $file がありません" >&2; return 1; }
+    [[ "$file_count" -eq 0 ]] && { echo "✗ issue-${iid}-から始まるファイルがありません" >&2; return 1; }
+    [[ "$file_count" -ne 1 ]] && { echo "✗ issue-${iid}-から始まるファイルが複数存在します" >&2; return 1; }
     if [[ ! -f "$backup_file" ]]; then
         echo "✗ $backup_file がありません。取得します。" >&2
         get-gitlab-issue "$iid" "true"
@@ -174,14 +179,14 @@ update-gitlab-issue() {
     [[ -z "$GITLAB_TOKEN" ]] && { echo "✗ GITLAB_TOKEN 未設定" >&2; return 1; }
 
     # フロー: バウンダリで分割 --------------------------------------------
-    split_file_by_boundary "$file"  "$iid" "$split_dir/issue_$iid/new/"
-    split_file_by_boundary "$backup_file" "$iid" "$split_dir/issue_$iid/bk/"
+    split_file_by_boundary "$file"  "$iid" "$split_dir/issue-${iid}/new/"
+    split_file_by_boundary "$backup_file" "$iid" "$split_dir/issue-${iid}/bk/"
 
 
     # フロー: 分割ファイルの差分比較 & 処理ループ
     # 分割したファイルを diff で比較し、ファイルごとに処理 ------------------
-    local new_dir="$split_dir/issue_$iid/new"
-    local bk_dir="$split_dir/issue_$iid/bk"
+    local new_dir="$split_dir/issue-${iid}/new"
+    local bk_dir="$split_dir/issue-${iid}/bk"
 
     # 2 つのディレクトリに存在するファイル名をユニークに抽出
     mapfile -t file_list < <( {
@@ -207,11 +212,11 @@ update-gitlab-issue() {
             # 新しいファイルが空または改行のみで、旧ファイルは中身がある場合
             diff_output=$(cat "$old_file")
             mode="delete"
-            note_id=$(awk '/^\[.*\]$/{gsub(/[\[\]]/, "", $1); print $1}' "$old_file")
+            note_id=$(awk '/^\[.*\]$/{gsub(/[\[\]]/, ""); print; exit}' "$old_file")
         elif [[ -f "$new_file" && -f "$old_file" ]]; then
             diff_output=$(diff -u "$old_file" "$new_file")
             mode="update"
-            note_id=$(awk '/^\[.*\]$/{gsub(/[\[\]]/, "", $1); print $1}' "$new_file")
+            note_id=$(awk '/^\[.*\]$/{gsub(/[\[\]]/, ""); print; exit}' "$new_file")
         elif [[ -f "$new_file" && ! -f "$old_file" ]]; then
             diff_output=$(cat "$new_file")
             mode="post"
@@ -272,7 +277,7 @@ update-gitlab-issue() {
     fi
     
     # フロー: 一時ファイル削除 & ブラウザで Issue ページを開く
-    rm -rf "$split_dir/issue_$iid"
+    rm -rf "$split_dir/issue-${iid}"
     if [[ "$skipped_any" == "false" ]]; then
         rm -f "$file"
         rm -f "$backup_file"

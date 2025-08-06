@@ -55,10 +55,11 @@ create-gitlab-mr() {
         description="Resolve #$issue"
     fi
 
+    # #273 追加: タイトルにissue番号を含める
     # フロー: タイトル決定
     local issue_data=$(curl -sfS -H "PRIVATE-TOKEN:$GITLAB_TOKEN" \
         "$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/issues/$issue") || return 1
-    local title="Resolve: $(jq -r '.title' <<<"$issue_data")"
+    local title="Resolve: #$issue $(jq -r '.title' <<<"$issue_data")"
 
     # フロー: GitLab API で MR 作成
     local response
@@ -83,6 +84,10 @@ create-gitlab-mr() {
     nohup xdg-open "$GITLAB_HOST/$GITLAB_PROJ_RAW/-/merge_requests/$mr_iid" >/dev/null 2>&1 &
     disown
 
+    # #240 追加: MR 本文を取得
+    # フロー: MR 本文を取得
+    get-gitlab-mr-body $mr_iid
+
     # 既にブランチにいるため切り替え完了メッセージのみ
     echo "✓ ブランチ切り替え完了 ($branch)"
-} 
+}

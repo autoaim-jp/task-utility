@@ -12,8 +12,10 @@ get-gitlab-issue() {
         || { echo "✗ git 管理下で実行してください"; return 1; }
 
     local dir="$root/__download"
-    local file="$dir/issue_${iid}.md"
-    local backup_file="$dir/__bk/issue_${iid}.md.bk"
+    # #259 更新: issue-###-タイトル.md
+    local file_pattern="$dir/issue-${file_id}-.+\.md"
+    local file_count=$(find "$dir" -type f -regex "$file_pattern" | wc -l)
+
     mkdir -p "$dir" "$dir/__bk/"
 
     # フロー: GITLAB_TOKEN など環境変数確認
@@ -22,7 +24,7 @@ get-gitlab-issue() {
     # フロー: 既存ファイルチェックとバックアップモード判定
     if [[ "$is_bk_only" == "true" ]]; then
         file="${file}__tmp"
-    elif [[ -f "$file" ]]; then
+    elif [[ "$file_count" -ne 0 ]]; then
         echo "✗ $file が既に存在しています。上書きできません。"; return 1;
     fi
 
@@ -37,14 +39,38 @@ get-gitlab-issue() {
         return 1
     fi
 
-    local notes=$(curl -sfS -H "PRIVATE-TOKEN:$GITLAB_TOKEN" \
-        "$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/issues/$iid/notes?per_page=100") || return 1
+    # #259 更新: issue-###-タイトル.md
+    # 日本語や記号は許可し、ファイル名として使えない文字を置換
+    local title=$(jq -r '.title' <<<"$issue")
+    local title_sanitized=$(printf '%s' "$title" \
+             | sed -e 's/[\/\\:*?"<>|. ]/_/g' \
+                   -e 's/[[:cntrl:]]/_/g' \
+                   | cut -c-100)
+    local file="$dir/issue-${iid}-${title_sanitized}.md"
 
     # フロー: ファイル生成 (バウンダリ区切り)
     local timestamp
     timestamp="$(date +"%Y%m%d%H%M%S%3N")"
     local boundary="##### -boundary-${timestamp}"
 
+    # #259 更新: ページネーション対応
+    # フロー: コメント取得
+    page=1
+    all_notes="[]"
+    while :; do
+    page_json=$(curl -sfS -H "PRIVATE-TOKEN:$GITLAB_TOKEN" \
+                "$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/issues/$iid/notes?per_page=100&page=$page")
+
+    # 何も返ってこなければループ終了
+    [[ $(jq 'length' <<<"$page_json") -eq 0 ]] && break
+
+    # ページをマージ
+    all_notes=$(jq -s 'add' <(echo "$all_notes") <(echo "$page_json"))
+    ((page++))
+    done
+
+    # #204 追加: 本文更新やメンションなどは除外する
+    notes=$(jq '[ .[] | select(.system | not) ]' <<<"$all_notes")
     {
       echo "$boundary"
       echo "[タイトル]"
@@ -57,7 +83,7 @@ get-gitlab-issue() {
     } >"$file"
 
     # フロー: バックアップ作成
-    local backup_file="$dir/__bk/issue_${iid}.md.bk"
+    local backup_file="$dir/__bk/issue-${iid}.md.bk"
     cp "$file" "$backup_file" || { echo "✗ バックアップの作成に失敗しました"; return 1; }
 
     if [[ "$is_bk_only" == "true" ]]; then

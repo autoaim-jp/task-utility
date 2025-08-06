@@ -31,42 +31,54 @@ close-gitlab-milestone-by-prefix() {
     done
 
     # --- マイルストーン一覧取得 -----------------------------------------
-    local api_url="$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/milestones?state=active&per_page=100"
     echo "プレフィックス '[${prefix}]' で始まるアクティブマイルストーンを取得しています..."
-    local milestones_json
-    milestones_json=$(curl -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$api_url") || { echo "✗ API 失敗" >&2; return 1; }
+    local milestones_json="[]"
+    local page=1
+    
+    # ページネーション処理ですべてのマイルストーンを取得
+    while true; do
+        local api_url="$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/milestones?state=active&per_page=100&page=$page"
 
-    # --- デフォルトマイルストーン確認/作成 -------------------------------
+        local page_response
+        page_response=$(curl -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$api_url")
+        
+        # レスポンスが空配列または取得失敗の場合は終了
+        if [[ "$page_response" == "[]" ]] || [[ -z "$page_response" ]] || echo "$page_response" | jq -e 'type != "array"' >/dev/null 2>&1; then
+            break
+        fi
+        
+        # 取得したマイルストーンを結合
+        milestones_json=$(echo "$milestones_json $page_response" | jq -s 'add')
+        
+        # 取得したマイルストーン数が100未満の場合は最後のページ
+        local count
+        count=$(echo "$page_response" | jq 'length')
+        if [[ $count -lt 100 ]]; then
+            break
+        fi
+        
+        ((page++))
+    done
+    
+
+
+    # --- デフォルトマイルストーン確認 -------------------------------
     local default_milestone_id=""
+    local default_milestone_exists=false
     while IFS= read -r m; do
         local title id
         title=$(echo "$m" | jq -r '.title // empty')
         if [[ "$title" == "[${prefix}]" ]]; then
             id=$(echo "$m" | jq -r '.id')
             default_milestone_id="$id"
+            default_milestone_exists=true
+            echo "デフォルトマイルストーン ID: $default_milestone_id が見つかりました。"
             break
         fi
     done < <(echo "$milestones_json" | jq -c '.[]')
 
-    if [[ -z "$default_milestone_id" ]]; then
-        echo "デフォルトマイルストーンが存在しません。作成します..."
-        local create_resp create_http
-        create_resp=$(curl -s -w "\n%{http_code}" \
-            -X POST \
-            -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"title\": \"[${prefix}]\"}" \
-            "$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/milestones")
-        create_http=$(echo "$create_resp" | tail -n 1)
-        if [[ "$create_http" -ne 201 ]]; then
-            echo "❌ マイルストーンの作成に失敗しました (HTTP $create_http)" >&2
-            echo "レスポンス: $(echo "$create_resp" | head -n -1)" >&2
-            return 1
-        fi
-        default_milestone_id=$(echo "$create_resp" | head -n -1 | jq -r '.id')
-        echo "✅ デフォルトマイルストーン作成成功 (ID: $default_milestone_id)"
-    else
-        echo "デフォルトマイルストーン ID: $default_milestone_id を使用します。"
+    if [[ "$default_milestone_exists" == false ]]; then
+        echo "デフォルトマイルストーンが存在しません。必要に応じて作成します。"
     fi
 
     # --- prefix マイルストーン抽出 & 整形 -------------------------------
@@ -138,6 +150,26 @@ close-gitlab-milestone-by-prefix() {
         return 0
     fi
 
+    # --- デフォルトマイルストーン作成 (実行確認後) ---------------------
+    if [[ "$default_milestone_exists" == false ]]; then
+        echo "デフォルトマイルストーンを作成します..."
+        local create_resp create_http
+        create_resp=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\": \"[${prefix}]\"}" \
+            "$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/milestones")
+        create_http=$(echo "$create_resp" | tail -n 1)
+        if [[ "$create_http" -ne 201 ]]; then
+            echo "❌ マイルストーンの作成に失敗しました (HTTP $create_http)" >&2
+            echo "レスポンス: $(echo "$create_resp" | head -n -1)" >&2
+            return 1
+        fi
+        default_milestone_id=$(echo "$create_resp" | head -n -1 | jq -r '.id')
+        echo "✅ デフォルトマイルストーン作成成功 (ID: $default_milestone_id)"
+    fi
+
     # --- メイン処理 ------------------------------------------------------
     local moved=0 closed=0 failed=0
     local total=${#filtered[@]}
@@ -160,10 +192,32 @@ close-gitlab-milestone-by-prefix() {
 
         echo "target_milestone_id: $target_milestone_id"
 
-        # --- open issue を取得 -----------------------------------------
-        local issues_url="$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/milestones/$id/issues?state=opened&per_page=100"
-        local issues_json
-        issues_json=$(curl -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$issues_url")
+        # --- open issue を取得 (ページネーション対応) -----------------
+        local issues_json="[]"
+        local issue_page=1
+        
+        while true; do
+            local issues_url="$GITLAB_HOST/api/v4/projects/$GITLAB_PROJ/milestones/$id/issues?state=opened&per_page=100&page=$issue_page"
+            local page_issues
+            page_issues=$(curl -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" "$issues_url")
+            
+            # レスポンスが空配列または取得失敗の場合は終了
+            if [[ "$page_issues" == "[]" ]] || [[ -z "$page_issues" ]] || echo "$page_issues" | jq -e 'type != "array"' >/dev/null 2>&1; then
+                break
+            fi
+            
+            # 取得したissueを結合
+            issues_json=$(echo "$issues_json $page_issues" | jq -s 'add')
+            
+            # 取得したissue数が100未満の場合は最後のページ
+            local issue_count
+            issue_count=$(echo "$page_issues" | jq 'length')
+            if [[ $issue_count -lt 100 ]]; then
+                break
+            fi
+            
+            ((issue_page++))
+        done
 
         while IFS= read -r issue; do
             local iid

@@ -10,12 +10,18 @@ update-gitlab-mr-body() {
     root="$(git -C . rev-parse --show-toplevel 2>/dev/null)" \
         || { echo "✗ git 管理下で実行してください"; return 1; }
 
-    # フロー: ローカル Markdown ファイル存在確認
-    local file="$root/__download/mr_${iid}.md"
-    [[ -f "$file" ]] || { echo "✗ $file がありません"; return 1; }
+    # #259 更新: mr-###-タイトル.md
+    local dir="$root/__download"
+    local file_pattern="$dir/mr-${iid}-.+\.md"
+    local file_count=$(find "$dir" -type f -regex "$file_pattern" | wc -l)
+
+    [[ "$file_count" -eq 0 ]] && { echo "✗ mr-${iid}-から始まるファイルがありません"; return 1; }
+    [[ "$file_count" -ne 1 ]] && { echo "✗ mr-${iid}-から始まるファイルが複数存在します"; return 1; }
 
     # フロー: GITLAB_TOKEN 確認
     [[ -z "$GITLAB_TOKEN" ]] && { echo "✗ GITLAB_TOKEN 未設定"; return 1; }
+
+    local file=$(find "$dir" -type f -regex "$file_pattern" | head -n 1)
 
     # フロー: GitLab API で MR 本文を更新 (.md 全文)
     curl -sfS -X PUT \
